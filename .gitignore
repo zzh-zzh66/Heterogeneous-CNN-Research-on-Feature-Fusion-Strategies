@@ -1,0 +1,20 @@
+# 忽略大型数据文件（PyTorch会自动下载）
+data/cifar-10-python.tar.gz
+
+# 忽略文档目录（课程论文相关，包含学生个人信息）
+doc/
+
+# 忽略论文正文相关文件
+paper/
+
+# 忽略生成脚本（中间文件）
+gen_fig5_3.py
+supplement_m5_iou.py
+
+# 忽略大型训练产物
+results/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
