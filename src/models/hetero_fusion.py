@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-HeteroFusion: 异构CNN特征融合模型
+HeteroFusion: 异构CNN特征融合模型，带有惩罚项的正交正则化，强制模型提取互补的不同的特征。
 
 核心思想：
 ---------
