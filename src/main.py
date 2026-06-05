@@ -57,6 +57,55 @@ from models import (
 )
 
 
+def get_phased_lambdas(epoch: int, total_epochs: int,
+                       orth_start: float = 0.01, orth_end: float = 0.0,
+                       coop_start: float = 0.0, coop_end: float = 0.05,
+                       phase1_epochs: int = 30, phase2_epochs: int = 30):
+    """
+    计算分阶段训练的 λ_orth 和 λ_coop 动态值
+
+    阶段一 (0 ~ phase1_epochs-1)：差异化播种期
+        λ_orth = orth_start, λ_coop = coop_start
+        强制三个分支学习差异化特征
+
+    阶段二 (phase1_epochs ~ phase1_epochs+phase2_epochs-1)：协作转型期
+        λ_orth 线性衰减, λ_coop 线性增长
+        逐步放权差异化约束，引入协作奖励
+
+    阶段三 (phase1_epochs+phase2_epochs ~ total_epochs-1)：协作稳定期
+        λ_orth = orth_end, λ_coop = coop_end
+        在已差异化的特征基础上，纯协作模式运行
+
+    Args:
+        epoch: 当前 epoch 编号 (0-based)
+        total_epochs: 总训练 epoch 数
+        orth_start: λ_orth 初始值
+        orth_end: λ_orth 终值
+        coop_start: λ_coop 初始值
+        coop_end: λ_coop 终值
+        phase1_epochs: 阶段一 epoch 数
+        phase2_epochs: 阶段二 epoch 数
+
+    Returns:
+        (lambda_orth, lambda_coop) 当前 epoch 的动态系数
+    """
+    if epoch < phase1_epochs:
+        # 阶段一：纯差异化
+        lambda_orth = orth_start
+        lambda_coop = coop_start
+    elif epoch < phase1_epochs + phase2_epochs:
+        # 阶段二：线性过渡
+        progress = (epoch - phase1_epochs) / phase2_epochs
+        lambda_orth = orth_start + (orth_end - orth_start) * progress
+        lambda_coop = coop_start + (coop_end - coop_start) * progress
+    else:
+        # 阶段三：纯协作
+        lambda_orth = orth_end
+        lambda_coop = coop_end
+
+    return lambda_orth, lambda_coop
+
+
 def set_seed(seed: int = 42) -> None:
     """
     设置随机种子以确保结果可复现
@@ -72,6 +121,11 @@ def set_seed(seed: int = 42) -> None:
     # 让CuDNN使用确定性算法（可能牺牲一点速度）
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def _fmt_param(val: float) -> str:
+    """格式化超参数为目录名片段（去除冗余尾缀，如 0.0 → 0）"""
+    return f"{val:g}".replace('.', 'p')
 
 
 def create_model(model_name: str, args) -> nn.Module:
@@ -113,8 +167,7 @@ def create_model(model_name: str, args) -> nn.Module:
             lambda_orth=args.lambda_orth,
             dropout=args.dropout
         )
-        # 保存目录包含λ值
-        lambda_str = str(args.lambda_orth).replace('.', 'p')
+        lambda_str = _fmt_param(args.lambda_orth)
         save_dir = f"{args.save_dir}/M5_hetero_lambda{lambda_str}"
 
     elif model_name == 'hetero_fusion_coop':
@@ -125,9 +178,28 @@ def create_model(model_name: str, args) -> nn.Module:
             lambda_aux=args.lambda_aux,
             dropout=args.dropout
         )
-        coop_str = str(args.lambda_coop).replace('.', 'p')
-        aux_str = str(args.lambda_aux).replace('.', 'p')
-        save_dir = f"{args.save_dir}/M6_hetero_coop_c{coop_str}_a{aux_str}"
+        coop_str = _fmt_param(args.lambda_coop)
+        aux_str = _fmt_param(args.lambda_aux)
+        if args.lambda_orth > 0:
+            # M7: 组合实验（差异化约束 + 合作损失）
+            orth_str = _fmt_param(args.lambda_orth)
+            save_dir = f"{args.save_dir}/M7_hetero_combined_λ{orth_str}_c{coop_str}_a{aux_str}"
+        else:
+            # M6: 纯合作损失实验
+            save_dir = f"{args.save_dir}/M6_hetero_coop_c{coop_str}_a{aux_str}"
+
+    elif model_name == 'hetero_fusion_phased':
+        # M8: 分阶段λ调度异构融合
+        # 阶段一：λ_orth=0.01 强制差异化
+        # 阶段二：λ_orth→0, λ_coop→0.05 逐步转型
+        # 阶段三：纯协作稳定运行
+        model = HeteroFusionCoop(
+            lambda_orth=args.orth_start,    # 初始值，训练时动态覆盖
+            lambda_coop=args.coop_start,    # 初始值，训练时动态覆盖
+            lambda_aux=args.lambda_aux,
+            dropout=args.dropout
+        )
+        save_dir = f"{args.save_dir}/M8_hetero_phased"
 
     elif model_name == 'single_large':
         # 单分支大CNN（M0，核心对比基线）
@@ -158,6 +230,7 @@ def get_model_display_name(model_name: str, args) -> str:
         'homo_ensemble': 'Homo Ensemble (3×Branch2)',
         'hetero_fusion': f'Hetero Fusion (λ={args.lambda_orth})',
         'hetero_fusion_coop': f'Hetero Fusion Coop (λc={args.lambda_coop}, λa={args.lambda_aux})',
+        'hetero_fusion_phased': f'Hetero Fusion Phased (orth:{args.orth_start}→{args.orth_end}, coop:{args.coop_start}→{args.coop_end})',
         'single_large': 'Single Large CNN (M0 Baseline)',
     }
     return name_map.get(model_name, model_name)
@@ -270,9 +343,16 @@ def main():
     # -------------------------------------------------------------------------
     # 训练
     # -------------------------------------------------------------------------
+    # 是否为分阶段训练模式
+    is_phased = (args.model == 'hetero_fusion_phased')
+
     print(f"\n[4/5] 开始训练...")
     print(f"训练轮数: {args.epochs}")
-    print(f"正交正则化系数 λ: {args.lambda_orth}")
+    if is_phased:
+        print(f"分阶段λ调度: λ_orth {args.orth_start}→{args.orth_end}, λ_coop {args.coop_start}→{args.coop_end}")
+        print(f"阶段划分: 差异化期{args.phase1_epochs}轮 → 转型期{args.phase2_epochs}轮 → 稳定期{args.epochs - args.phase1_epochs - args.phase2_epochs}轮")
+    else:
+        print(f"正交正则化系数 λ: {args.lambda_orth}")
     print("-" * 60)
 
     train_history = []
@@ -282,6 +362,36 @@ def main():
     for epoch in range(args.epochs):
         epoch_start = time.time()
 
+        # ---------------------------------------------------------------------
+        # 分阶段λ调度：根据epoch动态计算λ_orth和λ_coop
+        # ---------------------------------------------------------------------
+        if is_phased:
+            cur_lambda_orth, cur_lambda_coop = get_phased_lambdas(
+                epoch=epoch,
+                total_epochs=args.epochs,
+                orth_start=args.orth_start,
+                orth_end=args.orth_end,
+                coop_start=args.coop_start,
+                coop_end=args.coop_end,
+                phase1_epochs=args.phase1_epochs,
+                phase2_epochs=args.phase2_epochs
+            )
+            cur_lambda_aux = args.lambda_aux
+            # 打印阶段切换提示
+            if epoch == 0:
+                print(f"  [阶段一] 差异化播种期 (epoch 1-{args.phase1_epochs}): "
+                      f"λ_orth={args.orth_start}, λ_coop={args.coop_start}")
+            elif epoch == args.phase1_epochs:
+                print(f"  [阶段二] 协作转型期 (epoch {args.phase1_epochs+1}-{args.phase1_epochs+args.phase2_epochs}): "
+                      f"λ_orth: {args.orth_start}→{args.orth_end}, λ_coop: {args.coop_start}→{args.coop_end}")
+            elif epoch == args.phase1_epochs + args.phase2_epochs:
+                print(f"  [阶段三] 协作稳定期 (epoch {args.phase1_epochs+args.phase2_epochs+1}-{args.epochs}): "
+                      f"λ_orth={args.orth_end}, λ_coop={args.coop_end}")
+        else:
+            cur_lambda_orth = args.lambda_orth
+            cur_lambda_coop = args.lambda_coop if args.model == 'hetero_fusion_coop' else 0.0
+            cur_lambda_aux = args.lambda_aux
+
         # 训练一个epoch
         train_stats = train_one_epoch(
             model=model,
@@ -290,9 +400,9 @@ def main():
             criterion=criterion,
             device=device,
             epoch=epoch,
-            lambda_orth=args.lambda_orth,
-            lambda_coop=args.lambda_coop if args.model == 'hetero_fusion_coop' else 0.0,
-            lambda_aux=args.lambda_aux,
+            lambda_orth=cur_lambda_orth,
+            lambda_coop=cur_lambda_coop,
+            lambda_aux=cur_lambda_aux,
             log_interval=args.log_interval
         )
 
@@ -339,12 +449,14 @@ def main():
         # 打印简洁的epoch进度
         improved = " ★" if is_best else ""
         extra_info = ""
-        if args.lambda_orth > 0:
+        if cur_lambda_orth > 0:
             extra_info += f" | Orth: {train_stats['orth_loss']:.6f} ({(train_stats['orth_loss']/train_stats['loss']*100):.1f}%)"
-        if args.model == 'hetero_fusion_coop':
+        if args.model in ('hetero_fusion_coop', 'hetero_fusion_phased'):
             coop_val = train_stats.get('coop_loss', 0.0)
             aux_val = train_stats.get('aux_loss', 0.0)
             extra_info += f" | Coop: {coop_val:.4f} | Aux: {aux_val:.4f}"
+        if is_phased:
+            extra_info += f" | λ_orth={cur_lambda_orth:.4f} λ_coop={cur_lambda_coop:.4f}"
         print(f"Epoch {epoch+1:3d}/{args.epochs} | "
               f"Train Loss: {train_stats['loss']:.4f}  Acc: {train_stats['acc']:.2f}% | "
               f"CE: {train_stats['ce_loss']:.4f}{extra_info} | "
@@ -380,6 +492,14 @@ def main():
         'model': args.model,
         'model_display_name': model_display_name,
         'lambda_orth': args.lambda_orth,
+        'lambda_coop': getattr(args, 'lambda_coop', 0.0),
+        'lambda_aux': getattr(args, 'lambda_aux', 0.3),
+        'orth_start': getattr(args, 'orth_start', None),
+        'orth_end': getattr(args, 'orth_end', None),
+        'coop_start': getattr(args, 'coop_start', None),
+        'coop_end': getattr(args, 'coop_end', None),
+        'phase1_epochs': getattr(args, 'phase1_epochs', None),
+        'phase2_epochs': getattr(args, 'phase2_epochs', None),
         'epochs': args.epochs,
         'batch_size': args.batch_size,
         'lr': args.lr,
@@ -419,7 +539,7 @@ def main():
         sample_images = sample_images[:8].to(device)
 
         # 多分支模型：为每个分支分别生成热力图 + IoU分析
-        if args.model in ('hetero_fusion', 'hetero_fusion_coop'):
+        if args.model in ('hetero_fusion', 'hetero_fusion_coop', 'hetero_fusion_phased'):
             print("  [多分支分析] 为每个分支分别生成 Grad-CAM...")
             plot_multi_branch_gradcam(model, sample_images, save_dir, CIFAR10_CLASSES)
 

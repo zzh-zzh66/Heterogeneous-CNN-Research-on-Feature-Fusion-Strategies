@@ -1,0 +1,8 @@
+{
+  "iou_b1_b2": 0.2418,
+  "iou_b1_b3": 0.2254,
+  "iou_b2_b3": 0.3645,
+  "mean_iou": 0.2773,
+  "num_samples": 8,
+  "threshold": 0.3
+}

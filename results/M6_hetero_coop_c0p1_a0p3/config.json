@@ -1,0 +1,14 @@
+{
+  "model": "hetero_fusion_coop",
+  "model_display_name": "Hetero Fusion Coop (λc=0.1, λa=0.3)",
+  "lambda_orth": 0.0,
+  "epochs": 80,
+  "batch_size": 128,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "dropout": 0.3,
+  "seed": 42,
+  "total_params": 634920,
+  "device": "cuda",
+  "total_time_minutes": 43.26305995384852
+}

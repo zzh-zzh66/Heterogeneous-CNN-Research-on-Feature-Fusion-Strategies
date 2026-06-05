@@ -1,0 +1,14 @@
+{
+  "model": "single_b2",
+  "model_display_name": "Single Branch2 (Edge)",
+  "lambda_orth": 0.0,
+  "epochs": 80,
+  "batch_size": 128,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "dropout": 0.3,
+  "seed": 42,
+  "total_params": 259722,
+  "device": "cuda",
+  "total_time_minutes": 19.782262992858886
+}

@@ -114,7 +114,8 @@ def train_one_epoch(
                             and hasattr(model, 'head_b2') \
                             and hasattr(model, 'head_b3')
 
-            if is_coop_model and lambda_coop > 0:
+            # HeteroFusionCoop 始终需要分支 logits
+            if is_coop_model:
                 f1, f2, f3, logits_b1, logits_b2, logits_b3 = \
                     model(images, return_features=True, return_branch_logits=True)
                 logits = model.classifier(
@@ -139,35 +140,33 @@ def train_one_epoch(
         ce_loss = criterion(logits, labels)
 
         # -------------------------------------------------------------------------
-        # 分段损失计算：协作奖励 > 正交约束 > 纯CE
+        # 损失计算：支持正交约束与协作损失的任意组合
         # -------------------------------------------------------------------------
         coop_loss = torch.tensor(0.0, device=device)
         aux_loss = torch.tensor(0.0, device=device)
         orth_loss = torch.tensor(0.0, device=device)
+        loss = ce_loss
 
-        if lambda_coop > 0 and is_coop_model:
-            # ★ 协作奖励模式
-            # 1. 计算各分支独立分类损失（辅助监督）
+        # 协作/辅助损失（HeteroFusionCoop 专用）
+        if is_coop_model:
             ce_b1 = criterion(logits_b1, labels)
             ce_b2 = criterion(logits_b2, labels)
             ce_b3 = criterion(logits_b3, labels)
             aux_loss = ce_b1 + ce_b2 + ce_b3
+            if lambda_coop > 0:
+                from .coop_loss import compute_coop_reward
+                coop_reward = compute_coop_reward(ce_loss, ce_b1, ce_b2, ce_b3)
+                coop_loss = coop_reward
+                loss = ce_loss + lambda_aux * aux_loss - lambda_coop * coop_loss
+            else:
+                loss = ce_loss + lambda_aux * aux_loss
 
-            # 2. 计算协作奖励：融合是否优于最佳单分支
-            from .coop_loss import compute_coop_reward
-            coop_reward = compute_coop_reward(ce_loss, ce_b1, ce_b2, ce_b3)
-            coop_loss = coop_reward
-
-            # 3. 总损失 = 融合CE + 辅助单分支 - 协作奖励
-            loss = ce_loss + lambda_aux * aux_loss - lambda_coop * coop_loss
-        elif lambda_orth > 0 and has_three_branches:
-            # 正交正则化损失（仅融合模型支持）
+        # 正交约束模式（所有三分支融合模型均支持）
+        if lambda_orth > 0 and has_three_branches:
             from .orth_loss import OrthogonalLoss
             orth_loss_fn = OrthogonalLoss()
             orth_loss = orth_loss_fn(f1, f2, f3)
-            loss = ce_loss + lambda_orth * orth_loss
-        else:
-            loss = ce_loss
+            loss = loss + lambda_orth * orth_loss
 
         # -------------------------------------------------------------------------
         # 反向传播

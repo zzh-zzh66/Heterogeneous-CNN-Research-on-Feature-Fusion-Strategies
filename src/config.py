@@ -52,7 +52,8 @@ def get_args():
             'single_b3',            # 单分支Branch3
             'homo_ensemble',        # 同构集成
             'hetero_fusion',        # 异构融合
-            'hetero_fusion_coop',   # 协作奖励异构融合 (★ 新增)
+            'hetero_fusion_coop',   # 协作奖励异构融合 (M6/M7)
+            'hetero_fusion_phased', # 分阶段λ调度异构融合 (M8)
             'single_large'          # 单分支大CNN基线(M0)
         ],
         help='选择模型类型'
@@ -93,6 +94,51 @@ def get_args():
         type=float,
         default=0.3,
         help='辅助单分支分类损失权重，防止分支退化（默认0.3）'
+    )
+
+    # -------------------------------------------------------------------------
+    # 分阶段训练配置（仅 hetero_fusion_phased / M8 使用）
+    # -------------------------------------------------------------------------
+    parser.add_argument(
+        '--use_phased',
+        action='store_true',
+        help='启用分阶段λ调度（差异化→协作转型→协作稳定）'
+    )
+    parser.add_argument(
+        '--orth_start',
+        type=float,
+        default=0.01,
+        help='阶段一正交约束初始系数（默认0.01）'
+    )
+    parser.add_argument(
+        '--orth_end',
+        type=float,
+        default=0.0,
+        help='阶段三正交约束终值系数（默认0.0）'
+    )
+    parser.add_argument(
+        '--coop_start',
+        type=float,
+        default=0.0,
+        help='阶段一协作奖励初始系数（默认0.0）'
+    )
+    parser.add_argument(
+        '--coop_end',
+        type=float,
+        default=0.05,
+        help='阶段三协作奖励终值系数（默认0.05）'
+    )
+    parser.add_argument(
+        '--phase1_epochs',
+        type=int,
+        default=30,
+        help='阶段一（差异化播种期）epoch数（默认30）'
+    )
+    parser.add_argument(
+        '--phase2_epochs',
+        type=int,
+        default=30,
+        help='阶段二（协作转型期）epoch数（默认30）'
     )
 
     # -------------------------------------------------------------------------
@@ -182,12 +228,16 @@ def get_args():
         help='计算设备：auto/cuda/cpu（默认auto）'
     )
 
-    # save_dir: 实验结果保存目录
+    # save_dir: 实验结果保存目录（绝对路径，不受运行目录影响）
+    import os as _os
+    _DEFAULT_SAVE_DIR = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'results'
+    )
     parser.add_argument(
         '--save_dir',
         type=str,
-        default='../results',
-        help='结果保存目录（默认../results）'
+        default=_DEFAULT_SAVE_DIR,
+        help=f'结果保存目录（默认{_DEFAULT_SAVE_DIR}）'
     )
 
     # log_interval: 每隔多少个epoch输出一次训练日志

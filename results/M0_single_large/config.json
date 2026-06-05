@@ -1,0 +1,14 @@
+{
+  "model": "single_large",
+  "model_display_name": "Single Large CNN (M0 Baseline)",
+  "lambda_orth": 0.0,
+  "epochs": 80,
+  "batch_size": 128,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "dropout": 0.3,
+  "seed": 42,
+  "total_params": 671450,
+  "device": "cuda",
+  "total_time_minutes": 19.83452721039454
+}
